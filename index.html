@@ -232,11 +232,19 @@ function extractProgress(words) {
   words.forEach((w) => { if (w.w2d.seen || w.d2w.seen) out[w.id] = { a: packStats(w.w2d), b: packStats(w.d2w) }; });
   return out;
 }
-function activePool(words, target) {
+const IN_HAND = 3; // level at which a word stops taking up a slot in the rotation
+function levelFor(w, mode) {
+  if (mode === "w2d") return w.w2d.level;
+  if (mode === "d2w") return w.d2w.level;
+  return (w.w2d.level + w.d2w.level) / 2;
+}
+// The target counts words still being LEARNED. Once a word is in hand it frees its
+// slot, so fresh words keep arriving instead of the rotation locking shut.
+function activePool(words, target, mode) {
   const started = words.filter((w) => w.w2d.seen || w.d2w.seen);
-  if (started.length >= target) return started;
+  const learning = started.filter((w) => levelFor(w, mode) < IN_HAND).length;
   const fresh = words.filter((w) => !w.w2d.seen && !w.d2w.seen && w.definition);
-  const need = Math.min(target - started.length, fresh.length);
+  const need = Math.min(Math.max(0, target - learning), fresh.length);
   const used = new Set(), picked = [];
   while (picked.length < need) {
     const i = Math.floor(Math.random() * fresh.length);
@@ -251,6 +259,7 @@ function pickWord(pool, dir, lastId) {
   const weights = pool.map((w) => {
     const s = w[dir];
     let base = Math.max(Math.pow(0.5, s.level), 0.025);
+    if (!s.seen) base *= 1.8; // never asked in this direction — favour it
     const mins = s.lastSeen ? (now - s.lastSeen) / 60000 : 1e6;
     const cooldown = mins < 1.5 ? 0.1 : mins < 8 ? 0.55 : 1;
     const aging = Math.min(2.2, 1 + mins / 1440);
@@ -274,7 +283,7 @@ function rankWords(words, sort) {
 const S = {
   profiles: [], name: null, data: blankData(), words: [],
   screen: "who", statTab: "weak", metric: "words", range: 30, limit: 50,
-  chartPick: null, query: "", modal: null,
+  chartPick: null, query: "", modal: null, pendingRestore: null, restored: 0,
   study: { current: null, dir: "w2d", result: null, session: { done: 0, right: 0 }, lastId: null, shownAt: 0, said: "" },
   listening: false, voiceMsg: "", recog: null, finalText: ""
 };
@@ -289,18 +298,61 @@ function loadProfile(name) {
 }
 function syncWords() { S.data.progress = extractProgress(S.words); save(); }
 
+// Rebuild the roster from whatever profile data is actually on the device, so a lost
+// or stale index can never hide someone who has practised here before.
+function discoverProfiles() {
+  const names = [];
+  const push = (n) => { if (n && !names.some((x) => x.toLowerCase() === n.toLowerCase())) names.push(n); };
+  (LS.get(K_PROFILES, []) || []).forEach(push);
+  try {
+    const prefix = "satvocab.data.";
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.indexOf(prefix) === 0) push(k.slice(prefix.length));
+    }
+  } catch (e) {}
+  LS.set(K_PROFILES, names);
+  return names;
+}
+function exportAll() {
+  const out = { v: 1, saved: new Date().toISOString(), profiles: S.profiles, data: {} };
+  S.profiles.forEach((p) => { out.data[p] = LS.get(dataKey(p), blankData()); });
+  return JSON.stringify(out);
+}
+function doRestore() {
+  const box = document.getElementById("restorebox");
+  const text = (S.pendingRestore || (box ? box.value : "") || "").trim();
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch (e) {}
+  if (!parsed || !parsed.data || typeof parsed.data !== "object") {
+    S.modal = { title: "That code did not work", body: "Paste the whole backup code, from the first brace to the last.",
+      actions: [{ id: "cancel", label: "Try again", style: "quiet" }] };
+    render(); return;
+  }
+  let n = 0;
+  Object.keys(parsed.data).forEach((name) => {
+    LS.set(dataKey(name), Object.assign(blankData(), parsed.data[name] || {}));
+    n++;
+  });
+  S.profiles = discoverProfiles();
+  S.restored = n;
+  S.pendingRestore = null;
+  S.modal = null; S.screen = "who";
+  render();
+}
+
 /* ---------- rendering ---------- */
 const app = document.getElementById("app");
 function render() {
   let html = "";
   if (S.screen === "who") html = viewWho();
-  else html = header() + ({ home: viewHome, study: viewStudy, stats: viewStats, browse: viewBrowse, add: viewAdd, people: viewPeople }[S.screen] || viewHome)();
+  else html = header() + ({ home: viewHome, study: viewStudy, stats: viewStats, browse: viewBrowse, add: viewAdd, people: viewPeople, backup: viewBackup }[S.screen] || viewHome)();
   if (S.modal) html += viewModal();
   app.innerHTML = html;
   bind();
 }
 function header() {
-  const titles = { study: "Practice", stats: "Progress", browse: "Word list", add: "Add words", people: "Who is practising", home: "SAT words" };
+  const titles = { study: "Practice", stats: "Progress", browse: "Word list", add: "Add words", people: "People", backup: "Backup", home: "SAT words" };
   const right = S.screen === "study"
     ? '<span>' + (S.study.session.done ? S.study.session.right + " of " + S.study.session.done + " right" : "Just started") + '</span><button class="link" data-go="home">Stop</button>'
     : '<button class="link" data-go="people">' + esc(S.name) + '</button>';
@@ -314,7 +366,8 @@ function viewWho() {
     return '<button class="whobtn" data-pick="' + esc(p) + '"><span>' + esc(p) + '</span><span class="meta">' +
       (answered ? answered + " answered" : "not started") + '</span></button>';
   }).join("");
-  return '<div class="top"><div class="brand">Who is practising?</div></div>' +
+  const banner = S.restored ? '<div class="panel" style="margin-bottom:12px"><p class="note" style="margin:0">Restored ' + S.restored + ' ' + (S.restored === 1 ? 'person' : 'people') + ' from the backup code.</p></div>' : '';
+  return '<div class="top"><div class="brand">Who is practising?</div></div>' + banner +
     '<div class="who">' + rows +
     '<button class="whobtn" data-newuser="1"><span>Add someone new</span><span class="meta">+</span></button></div>' +
     (S.profiles.length ? '<p class="note" style="margin-top:16px">Each person keeps their own words, scores and history on this device.</p>' :
@@ -327,6 +380,7 @@ function viewPeople() {
     (S.profiles.length > 1 ? '<button class="link" data-delperson="' + esc(p) + '">Delete</button>' : '') + '</div>').join("");
   return '<div class="stack" style="gap:14px"><div class="panel">' + rows + '</div>' +
     '<button class="btn ghost" data-newuser="1">Add someone new</button>' +
+    '<button class="btn ghost" data-go="backup">Back up or move to another device</button>' +
     '<button class="btn ghost" data-go="home">Back</button></div>';
 }
 
@@ -341,9 +395,10 @@ function viewHome() {
     out += '<div class="empty" style="padding-bottom:6px"><h2>' + DECK.length + ' words, a few at a time</h2>' +
       '<p>New words arrive in small groups. Once you know one it fades into the background, and anything you miss comes straight back.</p></div>';
   } else {
-    out += '<div class="stats"><div class="stat"><b>' + started.length + '</b><span>in rotation</span></div>' +
+    out += '<div class="stats"><div class="stat"><b>' + started.length + '</b><span>met so far</span></div>' +
       '<div class="stat"><b>' + mastered + '</b><span>solid</span></div>' +
-      '<div class="stat"><b>' + shaky + '</b><span>needs work</span></div></div>';
+      '<div class="stat"><b>' + shaky + '</b><span>needs work</span></div></div>' +
+      '<p class="note">' + (ready.length - started.length) + ' still to come. New words arrive as the ones you are learning settle down.</p>';
   }
   out += '<div class="panel"><div class="label">How do you want to be asked?</div><div class="seg">' +
     [["w2d", "Word &rarr; meaning"], ["d2w", "Meaning &rarr; word"], ["mixed", "Mix both"]]
@@ -491,9 +546,27 @@ function viewAdd() {
     '<button class="btn ghost" data-go="home">Cancel</button></div>';
 }
 
+function viewBackup() {
+  return '<div class="stack" style="gap:14px">' +
+    '<p class="note">Practice history lives inside this browser on this device. On an iPhone, the home screen icon and Safari keep <em>separate</em> copies, and Safari clears storage for sites left untouched for a few weeks. Use this to move everyone across, or to keep a copy somewhere safe.</p>' +
+    '<div class="panel"><div class="label">Backup code &mdash; copy this and keep it</div>' +
+    '<textarea id="backupbox" readonly style="min-height:110px;font-size:12px">' + esc(exportAll()) + '</textarea>' +
+    '<button class="btn quiet" style="margin-top:10px" data-copy="1">Copy the code</button></div>' +
+    '<div class="panel"><div class="label">Restore &mdash; paste a code here</div>' +
+    '<textarea id="restorebox" style="min-height:110px;font-size:12px" placeholder="Paste a backup code"></textarea>' +
+    '<button class="btn" style="margin-top:10px" data-askrestore="1">Restore from this code</button>' +
+    '<p class="hint">Anyone in the code replaces the same name on this device. Other people are left alone.</p></div>' +
+    '<button class="btn ghost" data-go="people">Back</button></div>';
+}
+
 function viewModal() {
   const m = S.modal;
-  return '<div class="overlay" data-overlay="1"><div class="modal"><h3>' + m.title + '</h3><p>' + m.body + '</p><div class="stack">' +
+  return '<div class="overlay" data-overlay="1"><div class="modal"><h3>' + m.title + '</h3>' +
+    (m.body ? '<p>' + m.body + '</p>' : '') +
+    (m.input ? '<input type="text" id="modalinput" maxlength="24" placeholder="' + esc(m.input.placeholder || "") +
+      '" value="' + esc(m.input.value || "") + '" style="margin-bottom:' + (m.error ? "8" : "16") + 'px">' : '') +
+    (m.error ? '<p class="hint" data-warn="1" style="margin:0 0 14px">' + esc(m.error) + '</p>' : '') +
+    '<div class="stack">' +
     m.actions.map((a) => '<button class="btn ' + (a.style || "ghost") + '" data-modal="' + a.id + '">' + a.label + '</button>').join("") +
     '</div></div></div>';
 }
@@ -502,7 +575,16 @@ function viewModal() {
 function nextCard() {
   const st = S.study;
   const d = S.data.mode === "mixed" ? (Math.random() < 0.5 ? "w2d" : "d2w") : S.data.mode;
-  const w = pickWord(activePool(S.words.filter((x) => x.definition), S.data.target), d, st.lastId);
+  const usable = S.words.filter((x) => x.definition);
+  let w = null;
+  // Roughly one card in six is a word never seen before, so the deck keeps opening up.
+  // The safety valve: stop letting new ones in while too many are still unlearned.
+  const unseen = usable.filter((x) => !x.w2d.seen && !x.d2w.seen);
+  const learning = usable.filter((x) => (x.w2d.seen || x.d2w.seen) && levelFor(x, S.data.mode) < IN_HAND).length;
+  if (unseen.length && learning < S.data.target * 1.5 && Math.random() < 0.17) {
+    w = unseen[Math.floor(Math.random() * unseen.length)];
+  }
+  if (!w) w = pickWord(activePool(usable, S.data.target, S.data.mode), d, st.lastId);
   if (!w) { S.screen = "home"; render(); return; }
   st.lastId = w.id; st.dir = d; st.current = w; st.result = null; st.said = "";
   st.shownAt = Date.now();
@@ -604,19 +686,15 @@ function bind() {
   on("[data-pick]", "click", (e) => { loadProfile(e.currentTarget.dataset.pick); S.screen = "home"; render(); });
   on("[data-switch]", "click", (e) => { loadProfile(e.currentTarget.dataset.switch); S.screen = "home"; render(); });
   on("[data-newuser]", "click", () => {
-    const name = (prompt("What name should this person practise under?") || "").trim().slice(0, 24);
-    if (!name) return;
-    if (S.profiles.some((p) => p.toLowerCase() === name.toLowerCase())) { alert("That name is already here."); return; }
-    S.profiles.push(name); LS.set(K_PROFILES, S.profiles);
-    LS.set(dataKey(name), blankData());
-    loadProfile(name); S.screen = "home"; render();
+    S.modal = { title: "Who is joining?", body: "First name is enough. This only exists on this device.",
+      input: { placeholder: "Name" },
+      actions: [{ id: "addname", label: "Start practising", style: "" }, { id: "cancel", label: "Cancel", style: "quiet" }] };
+    render();
   });
   on("[data-delperson]", "click", (e) => {
     const p = e.currentTarget.dataset.delperson;
-    if (!confirm("Delete " + p + " and all of their practice history?")) return;
-    S.profiles = S.profiles.filter((x) => x !== p);
-    LS.set(K_PROFILES, S.profiles); LS.del(dataKey(p));
-    if (S.name === p) loadProfile(S.profiles[0]);
+    S.modal = { title: "Delete " + esc(p) + "?", body: "Their words, scores and history go with them. This cannot be undone.",
+      person: p, actions: [{ id: "delperson", label: "Delete " + esc(p), style: "danger" }, { id: "cancel", label: "Keep them", style: "quiet" }] };
     render();
   });
 
@@ -670,9 +748,55 @@ function bind() {
     });
   }
 
+  on("[data-copy]", "click", (e) => {
+    const box = document.getElementById("backupbox");
+    if (!box) return;
+    box.select(); box.setSelectionRange(0, 999999);
+    const done = () => { e.currentTarget.textContent = "Copied"; setTimeout(() => { const b = app.querySelector("[data-copy]"); if (b) b.textContent = "Copy the code"; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(box.value).then(done, () => {});
+    else { try { document.execCommand("copy"); done(); } catch (err) {} }
+  });
+  on("[data-askrestore]", "click", () => {
+    const box = document.getElementById("restorebox");
+    if (!box || !box.value.trim()) return;
+    S.pendingRestore = box.value;
+    S.modal = { title: "Restore this backup?", body: "Anyone in the code replaces the same name on this device.",
+      actions: [{ id: "restore", label: "Restore", style: "" }, { id: "cancel", label: "Cancel", style: "quiet" }] };
+    render();
+    const nb = document.getElementById("restorebox");
+    if (nb) nb.value = S.pendingRestore;
+  });
+
+  const mi = document.getElementById("modalinput");
+  if (mi) {
+    mi.focus();
+    mi.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); const b = app.querySelector('[data-modal="addname"]'); if (b) b.click(); }
+    });
+  }
+
   on("[data-clear]", "click", askClear);
   on("[data-modal]", "click", (e) => {
-    const id = e.currentTarget.dataset.modal;
+    const id = e.currentTarget.dataset.modal, m = S.modal || {};
+    if (id === "cancel") { S.modal = null; S.pendingRestore = null; render(); return; }
+    if (id === "addname") {
+      const box = document.getElementById("modalinput");
+      const name = (box ? box.value : "").trim().slice(0, 24);
+      if (!name) { S.modal.error = "Type a name first."; render(); return; }
+      if (S.profiles.some((p) => p.toLowerCase() === name.toLowerCase())) { S.modal.error = "That name is already here."; render(); return; }
+      S.profiles.push(name);
+      LS.set(K_PROFILES, S.profiles);
+      LS.set(dataKey(name), blankData());
+      loadProfile(name);
+      S.modal = null; S.screen = "home"; render(); return;
+    }
+    if (id === "delperson") {
+      S.profiles = S.profiles.filter((x) => x !== m.person);
+      LS.set(K_PROFILES, S.profiles); LS.del(dataKey(m.person));
+      if (S.name === m.person) { if (S.profiles.length) loadProfile(S.profiles[0]); else { S.name = null; S.screen = "who"; } }
+      S.modal = null; render(); return;
+    }
+    if (id === "restore") { doRestore(); return; }
     if (id === "stats") { S.data.daily = {}; save(); }
     if (id === "all") { S.data.daily = {}; S.data.progress = {}; S.words = buildWords(S.data); save(); }
     S.modal = null; S.chartPick = null; render();
@@ -688,9 +812,10 @@ function bind() {
 
 /* ---------- boot ---------- */
 (function boot() {
-  S.profiles = LS.get(K_PROFILES, []);
+  S.profiles = discoverProfiles();
   const last = LS.get(K_CURRENT, null);
-  if (S.profiles.length && last && S.profiles.includes(last)) { loadProfile(last); S.screen = "who"; }
+  if (S.profiles.length && last && S.profiles.indexOf(last) !== -1) loadProfile(last);
+  S.screen = "who";
   render();
 })();
 </script>
