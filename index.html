@@ -214,7 +214,7 @@ function gradeMeaning(said, definition) {
   const ratio = hits / want.length;
   if (ratio >= 0.5 || (hits >= 2 && ratio >= 0.34)) return "correct";
   if (hits >= 1) return "close";
-  return null; // nothing recognisable — let the person judge
+  return null; // nothing recognizable — let the person judge
 }
 
 /* ---------- deck ---------- */
@@ -259,7 +259,7 @@ function pickWord(pool, dir, lastId) {
   const weights = pool.map((w) => {
     const s = w[dir];
     let base = Math.max(Math.pow(0.5, s.level), 0.025);
-    if (!s.seen) base *= 1.8; // never asked in this direction — favour it
+    if (!s.seen) base *= 1.8; // never asked in this direction — favor it
     const mins = s.lastSeen ? (now - s.lastSeen) / 60000 : 1e6;
     const cooldown = mins < 1.5 ? 0.1 : mins < 8 ? 0.55 : 1;
     const aging = Math.min(2.2, 1 + mins / 1440);
@@ -299,7 +299,7 @@ function loadProfile(name) {
 function syncWords() { S.data.progress = extractProgress(S.words); save(); }
 
 // Rebuild the roster from whatever profile data is actually on the device, so a lost
-// or stale index can never hide someone who has practised here before.
+// or stale index can never hide someone who has practiced here before.
 function discoverProfiles() {
   const names = [];
   const push = (n) => { if (n && !names.some((x) => x.toLowerCase() === n.toLowerCase())) names.push(n); };
@@ -367,7 +367,7 @@ function viewWho() {
       (answered ? answered + " answered" : "not started") + '</span></button>';
   }).join("");
   const banner = S.restored ? '<div class="panel" style="margin-bottom:12px"><p class="note" style="margin:0">Restored ' + S.restored + ' ' + (S.restored === 1 ? 'person' : 'people') + ' from the backup code.</p></div>' : '';
-  return '<div class="top"><div class="brand">Who is practising?</div></div>' + banner +
+  return '<div class="top"><div class="brand">Who is practicing?</div></div>' + banner +
     '<div class="who">' + rows +
     '<button class="whobtn" data-newuser="1"><span>Add someone new</span><span class="meta">+</span></button></div>' +
     (S.profiles.length ? '<p class="note" style="margin-top:16px">Each person keeps their own words, scores and history on this device.</p>' :
@@ -375,7 +375,7 @@ function viewWho() {
 }
 
 function viewPeople() {
-  const rows = S.profiles.map((p) => '<div class="row"><div style="flex:1">' + esc(p) + (p === S.name ? ' <span class="meta">practising now</span>' : '') +
+  const rows = S.profiles.map((p) => '<div class="row"><div style="flex:1">' + esc(p) + (p === S.name ? ' <span class="meta">practicing now</span>' : '') +
     '</div><button class="link" data-switch="' + esc(p) + '">Switch</button>' +
     (S.profiles.length > 1 ? '<button class="link" data-delperson="' + esc(p) + '">Delete</button>' : '') + '</div>').join("");
   return '<div class="stack" style="gap:14px"><div class="panel">' + rows + '</div>' +
@@ -406,7 +406,7 @@ function viewHome() {
     '</div><div class="label" style="margin:16px 0 9px">How many words in rotation at once?</div><div class="seg">' +
     [10, 20, 40, 100].map((n) => '<button data-target="' + n + '" data-on="' + (S.data.target === n ? 1 : 0) + '">' + n + '</button>').join("") +
     '</div></div>';
-  out += '<button class="btn" data-start="1"' + (ready.length ? "" : " disabled") + '>' + (started.length ? "Keep practising" : "Start practising") + '</button>';
+  out += '<button class="btn" data-start="1"' + (ready.length ? "" : " disabled") + '>' + (started.length ? "Keep practicing" : "Start practicing") + '</button>';
   if (missing) out += '<p class="note">' + missing + ' of your own words have no definition, so they stay out of practice. Add one from the word list.</p>';
   out += '<div class="stack" style="gap:8px">' +
     '<button class="btn ghost" data-go="stats">See how I am doing</button>' +
@@ -419,7 +419,7 @@ function viewHome() {
 
 function viewStudy() {
   const st = S.study, w = st.current;
-  if (!w) return '<div class="stage"><p class="note">Nothing to practise.</p></div>';
+  if (!w) return '<div class="stage"><p class="note">Nothing to practice.</p></div>';
   let out = '<div class="stage"><div><div class="pips">';
   for (let i = 0; i < MAX_LEVEL; i++) out += '<div class="pip" data-on="' + (i < w[st.dir].level ? 1 : 0) + '"></div>';
   out += '</div><div class="prompt">';
@@ -506,7 +506,7 @@ function viewStats() {
   out += '<div class="panel"><div class="label">Sort my words by</div><div class="seg">' +
     SORTS.map((s) => '<button data-sort="' + s[0] + '" data-on="' + (S.statTab === s[0] ? 1 : 0) + '">' + s[1] + '</button>').join("") +
     '</div><div class="meta" style="margin-top:12px">' + blurb[S.statTab] + '</div><div class="scroll" style="margin-top:4px">';
-  if (!ranked.length) out += '<p class="note">No words practised yet.</p>';
+  if (!ranked.length) out += '<p class="note">No words practiced yet.</p>';
   out += ranked.slice(0, S.limit).map((w, i) => {
     const seen = totalSeen(w);
     return '<div class="row"><div style="width:26px;flex-shrink:0" class="meta">' + (i + 1) + '</div>' +
@@ -688,7 +688,7 @@ function bind() {
   on("[data-newuser]", "click", () => {
     S.modal = { title: "Who is joining?", body: "First name is enough. This only exists on this device.",
       input: { placeholder: "Name" },
-      actions: [{ id: "addname", label: "Start practising", style: "" }, { id: "cancel", label: "Cancel", style: "quiet" }] };
+      actions: [{ id: "addname", label: "Start practicing", style: "" }, { id: "cancel", label: "Cancel", style: "quiet" }] };
     render();
   });
   on("[data-delperson]", "click", (e) => {
